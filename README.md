@@ -6,7 +6,7 @@ colorTo: indigo
 sdk: docker
 app_port: 7860
 pinned: false
-short_description: OpenEnv last-mile delivery dispatch API (FastAPI, WebSocket /ws, /docs).
+short_description: OpenEnv last-mile delivery API (FastAPI, WebSocket).
 ---
 
 # Delivery Optimization OpenEnv
