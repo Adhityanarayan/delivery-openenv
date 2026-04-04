@@ -7,7 +7,7 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
 # Gradio /web is optional; false keeps HF Docker builds smaller and startup faster.
-ENV ENABLE_WEB_INTERFACE=false
+ENV ENABLE_WEB_INTERFACE=true
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
