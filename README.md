@@ -1,3 +1,14 @@
+---
+title: Delivery OpenEnv
+emoji: 🚚
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: OpenEnv last-mile delivery dispatch API (FastAPI, WebSocket /ws, /docs).
+---
+
 # Delivery Optimization OpenEnv
 
 OpenEnv environment for **last-mile delivery dispatch** (Swiggy / Uber–style): the agent chooses **which order to serve next**, **how to move on a road graph**, and **when to batch** multiple orders under a **vehicle capacity** constraint.
