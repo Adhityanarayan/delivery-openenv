@@ -165,15 +165,25 @@ else
 fi
 
 log "  Found Dockerfile in $DOCKER_CONTEXT"
+log "  ${YELLOW}This can take 5–20+ min on first run${NC} (base image + pip, including Gradio). Output streams below."
+
+BUILD_LOG=$(portable_mktemp "validate-docker")
+CLEANUP_FILES+=("$BUILD_LOG")
+export DOCKER_VALIDATE_CONTEXT="$DOCKER_CONTEXT"
+export DOCKER_VALIDATE_LOG="$BUILD_LOG"
 
 BUILD_OK=false
-BUILD_OUTPUT=$(run_with_timeout "$DOCKER_BUILD_TIMEOUT" docker build -t delivery-openenv-validate "$DOCKER_CONTEXT" 2>&1) && BUILD_OK=true
+# Stream build logs to the terminal (captured builds look “hung” for many minutes).
+if run_with_timeout "$DOCKER_BUILD_TIMEOUT" bash -c 'set -o pipefail; docker build -t delivery-openenv-validate "$DOCKER_VALIDATE_CONTEXT" 2>&1 | tee "$DOCKER_VALIDATE_LOG"'; then
+  BUILD_OK=true
+fi
+unset DOCKER_VALIDATE_CONTEXT DOCKER_VALIDATE_LOG
 
 if [ "$BUILD_OK" = true ]; then
   pass "Docker build succeeded"
 else
   fail "Docker build failed (timeout=${DOCKER_BUILD_TIMEOUT}s)"
-  printf "%s\n" "$BUILD_OUTPUT" | tail -20
+  tail -20 "$BUILD_LOG" 2>/dev/null | sed 's/^/  /' || true
   stop_at "Step 2"
 fi
 
