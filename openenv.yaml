@@ -1,0 +1,11 @@
+name: delivery_optimization
+version: "1.0.0"
+description: >
+  Delivery Optimization OpenEnv — courier dispatch on a road graph with
+  pickups, dropoffs, vehicle capacity (batching), and delivery deadlines.
+  Tasks easy / medium / hard via reset(task_tier=...).
+
+author: adhiawesome
+
+# Suggested Space: https://huggingface.co/spaces/adhiawesome/delivery-openenv
+# Docker CMD in Dockerfile uses $PORT (HF sets this automatically).

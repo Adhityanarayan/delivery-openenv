@@ -1,0 +1,25 @@
+[project]
+name = "delivery-openenv"
+version = "1.0.0"
+description = "Delivery Optimization OpenEnv (hackathon)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core>=0.2.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "websockets>=13.0",
+    "openai>=1.55.0",
+]
+
+[project.scripts]
+# Required by `openenv validate` (multi-mode deployment)
+server = "server.app:main"
+
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["delivery_env", "server"]

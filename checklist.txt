@@ -1,0 +1,62 @@
+Pre-submission essentials — map each item to this repo and verify yourself
+================================================================================
+
+1) HF Space deploys
+   - Space: https://huggingface.co/spaces/adhiawesome/delivery-openenv
+   - Repo: push Dockerfile + delivery_env + server + requirements.txt (+ pyproject.toml optional).
+   - YOU VERIFY: Space shows "Running" (not "No application file").
+
+2) Automated ping — 200 + responds to reset()
+   - Health: GET https://<your-space>.hf.space/health  -> 200, body contains healthy
+   - Reset:  POST https://<your-space>.hf.space/reset   -> 200, JSON with "observation"
+   - Local helper:  PYTHONPATH=. python scripts/validate_presubmit.py --env-url <base>
+   - Note: full episodes use WebSocket /ws (DeliveryEnvClient); HTTP POST /reset still returns first obs.
+
+3) OpenEnv spec
+   - openenv.yaml          -> root openenv.yaml
+   - Typed models          -> delivery_env/models.py (Pydantic Action/Observation/State)
+   - reset/step/state      -> server/environment.py + server/app.py (create_app)
+
+4) Dockerfile builds
+   - YOU VERIFY: docker build -t delivery-openenv .
+   - Or:  python scripts/validate_presubmit.py  (includes docker build unless --skip-docker)
+
+5) Baseline / inference runs without error
+   - Non-LLM baseline:  PYTHONPATH=. python scripts/baseline.py
+   - LLM inference:     Set HF_TOKEN, API_BASE_URL, MODEL_NAME, DELIVERY_ENV_BASE_URL; then
+                        PYTHONPATH=. python inference.py
+   - Must emit [START], [STEP]..., [END] (see inference.py)
+
+6) 3+ tasks with graders in [0, 1]
+   - Tasks: reset(..., task_tier="easy"|"medium"|"hard")
+   - Grader: observation.grader_score when done=True
+   - YOU VERIFY: run baseline or a short rollout per tier; scores in [0,1]
+
+7) Mandatory env vars (for inference.py + LLM)
+   - API_BASE_URL   -> OpenAI-compatible endpoint (default HF router in inference.py)
+   - MODEL_NAME     -> model id
+   - HF_TOKEN       -> API key (or API_KEY)
+   - Also: DELIVERY_ENV_BASE_URL for the OpenEnv server (Space or localhost)
+
+8) inference.py rules
+   - File name: inference.py (lowercase) at repo root — NOT Inference.py
+   - OpenAI client: from openai import OpenAI
+   - Stdout: strict [START] / [STEP]  / [END]   spacing matches hackathon sample in inference.py
+
+9) Runtime / infra
+   - inference: DELIVERY_MAX_STEPS=250 default; keep total under ~20 min (checklist limit)
+   - Target: 2 vCPU, 8GB — use slim Docker image; avoid huge models if memory-bound
+
+10) Official-style shell validator
+   - bash scripts/validate_presubmit.zsh https://<your-space>.hf.space /path/to/OpenEnvHack
+   - Checks: GET /health, POST /reset, docker build, openenv validate
+   - Requires: uv.lock + [project.scripts] server in pyproject.toml (run: uv lock)
+
+11) Official validator
+   - Run the hackathon’s own script if they provide a different one.
+
+Quick commands
+--------------
+  bash scripts/validate_presubmit.zsh https://adhiawesome-delivery-openenv.hf.space .
+  uv sync && uv lock   # keep uv.lock committed for openenv validate
+  PYTHONPATH=. python scripts/baseline.py --seeds 0,1,2 --tiers easy,medium,hard

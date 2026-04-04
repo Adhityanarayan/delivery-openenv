@@ -1,3 +1,15 @@
+Metadata-Version: 2.4
+Name: delivery-openenv
+Version: 1.0.0
+Summary: Delivery Optimization OpenEnv (hackathon)
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openenv-core>=0.2.0
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn[standard]>=0.32.0
+Requires-Dist: websockets>=13.0
+Requires-Dist: openai>=1.55.0
+
 # Delivery Optimization OpenEnv
 
 OpenEnv environment for **last-mile delivery dispatch** (Swiggy / Uber–style): the agent chooses **which order to serve next**, **how to move on a road graph**, and **when to batch** multiple orders under a **vehicle capacity** constraint.
@@ -100,22 +112,6 @@ PYTHONPATH=. python scripts/baseline.py --json  # machine-readable
 
 Example run (seeds `0–4, 42, 100, 123`): greedy baseline mean grader **1.0** on easy and medium; hard **~0.97** on that seed set (use `scripts/baseline.py` to reproduce exactly).
 
-## Pre-submission (hackathon checklist)
-
-See **`checklist.txt`** for a line-by-line map to this repo.
-
-**Official-style validator** (health + `/reset`, Docker build, `openenv validate`):
-
-```bash
-bash scripts/validate_presubmit.zsh https://adhiawesome-delivery-openenv.hf.space .
-```
-
-Requires **`uv.lock`** in the repo (`uv lock`) and **`[project.scripts] server`** in `pyproject.toml` so `openenv validate` passes.
-
-Optional Python helper: `PYTHONPATH=. python scripts/validate_presubmit.py --env-url ...` (add `--skip-docker` if needed).
-
-LLM run: **`inference.py`** at repo root uses **`OpenAI`**, **`API_BASE_URL`**, **`MODEL_NAME`**, **`HF_TOKEN`** (or `API_KEY`), and emits **`[START]` / `[STEP]`  / `[END]`** with the spacing expected by the sample spec.
-
 ## Docker (local)
 
 ```bash
@@ -137,47 +133,23 @@ docker run -p 7860:7860 -e PORT=7860 delivery-openenv
 If the Space still shows **“No application file”**, the Docker app has not been pushed yet. From your **local project root** (`OpenEnvHack`):
 
 ```bash
-# one-time: token with write access to Spaces — https://huggingface.co/settings/tokens
+# one-time: create a fine-grained token with write access to Spaces at
+# https://huggingface.co/settings/tokens
 
 cd /path/to/OpenEnvHack
-git init && git checkout -b main   # skip if you already use git here
+# If this folder is not a git repo yet:
+git init && git checkout -b main
 
 git remote add hf https://huggingface.co/spaces/adhiawesome/delivery-openenv.git
-# If `hf` exists: git remote set-url hf https://huggingface.co/spaces/adhiawesome/delivery-openenv.git
+# If `hf` already exists: git remote set-url hf https://huggingface.co/spaces/adhiawesome/delivery-openenv.git
 
-git add -A
-git reset HEAD .venv .venv311 __pycache__ .DS_Store 2>/dev/null || true
-# Do not commit Inference.py — use inference.py only
+git add pyproject.toml Dockerfile requirements.txt openenv.yaml delivery_env server README.md inference.py
+git add scripts .gitignore 2>/dev/null; true
 git commit -m "OpenEnv delivery optimization server"
-
-# First push: HF often created an initial commit on the Space → histories differ.
-git push hf main || {
-  git pull hf main --allow-unrelated-histories --no-edit
-  git push hf main
-}
+git push hf main
 ```
 
-Use **`main`** unless the Space uses **`master`**. Password = **HF token**, not your login ([Docker Spaces](https://huggingface.co/docs/hub/spaces-sdks-docker)).
-
-**If `git push` fails with `ECONNREFUSED` … vscode-git-…sock** or **Invalid username or password**: Cursor/VS Code’s Git helper is not reachable from your terminal. Bypass it and use your token explicitly (create a token with **write** at [HF token settings](https://huggingface.co/settings/tokens)):
-
-```bash
-# Replace hf_xxx with your token. User name must be your HF username.
-export HF_TOKEN="hf_xxxxxxxx"
-git remote set-url hf "https://adhiawesome:${HF_TOKEN}@huggingface.co/spaces/adhiawesome/delivery-openenv.git"
-git -c credential.helper= push hf main
-```
-
-After a successful push, remove the token from the URL so it is not stored in `.git/config`:
-
-```bash
-git remote set-url hf https://huggingface.co/spaces/adhiawesome/delivery-openenv.git
-```
-
-Or push once with the full URL:  
-`git -c credential.helper= push "https://adhiawesome:${HF_TOKEN}@huggingface.co/spaces/adhiawesome/delivery-openenv.git" main`
-
-**Alternative (fewer merge surprises):** `git clone` the Space repo empty, copy these project files into it, `git add -A`, `git push`.
+Use **`main`** as the branch name unless your default branch is **`master`** (then `git push hf master`). When Git asks for a password, paste a **Hugging Face access token**, not your account password ([docs](https://huggingface.co/docs/hub/spaces-sdks-docker)).
 
 After a successful push, the Space rebuilds automatically. Confirm with **`/health`** returning `{"status":"healthy"}`.
 
