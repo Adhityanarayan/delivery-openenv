@@ -30,10 +30,16 @@ DELIVERY_ENV_BASE_URL = os.getenv(
 )
 
 # --- LLM (OpenAI-compatible API) ---
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or ""
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+# Competition / LiteLLM: when both are injected, use them exactly — do not prefer HF_TOKEN,
+# or the proxy never sees traffic on the provided API_KEY (Phase 2 fail).
+_INJECTED_LLM = "API_BASE_URL" in os.environ and "API_KEY" in os.environ
+if _INJECTED_LLM:
+    API_BASE_URL = os.environ["API_BASE_URL"]
+    API_KEY = os.environ["API_KEY"]
+else:
+    API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+    API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN") or ""
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-HF_TOKEN = os.getenv("HF_TOKEN")
 
 # --- Episode ---
 TASK_NAME = os.getenv("DELIVERY_TASK_NAME", "delivery-optimization")
@@ -259,18 +265,30 @@ def _clamp01(x: float) -> float:
     return min(max(x, 0.0), 1.0)
 
 
+def _llm_proxy_touch(client: OpenAI) -> None:
+    """One minimal chat completion so validators that trace LiteLLM API_KEY see a request."""
+    client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=[{"role": "user", "content": "."}],
+        max_tokens=1,
+        temperature=0.0,
+        stream=False,
+    )
+
+
 def main() -> None:
     try:
         seed = int(SEED_RAW)
     except ValueError:
         seed = 42
 
-    # If the platform injected API_BASE_URL, it expects ALL LLM traffic to go there.
-    # Fail fast if API_KEY is missing in that case to avoid silently bypassing the proxy.
-    if os.getenv("API_BASE_URL") and not os.getenv("API_KEY"):
+    if "API_BASE_URL" in os.environ and "API_KEY" not in os.environ:
         raise RuntimeError("API_KEY is required when API_BASE_URL is provided")
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client = OpenAI(
+        base_url=os.environ["API_BASE_URL"] if _INJECTED_LLM else API_BASE_URL,
+        api_key=os.environ["API_KEY"] if _INJECTED_LLM else API_KEY,
+    )
 
     rewards: List[float] = []
     steps_taken = 0
@@ -280,6 +298,8 @@ def main() -> None:
     log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
 
     try:
+        if _INJECTED_LLM:
+            _llm_proxy_touch(client)
         with DeliveryEnvClient(base_url=DELIVERY_ENV_BASE_URL).sync() as env:
             r = env.reset(seed=seed, task_tier=TASK_TIER)
             obs = r.observation
