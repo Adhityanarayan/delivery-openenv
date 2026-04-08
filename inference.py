@@ -26,7 +26,7 @@ from delivery_env.models import DeliveryAction, DeliveryObservation
 # --- Env (OpenEnv HTTP base → WebSocket client) ---
 DELIVERY_ENV_BASE_URL = os.getenv(
     "DELIVERY_ENV_BASE_URL",
-    os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:8000"),
+    os.getenv("ENV_URL", os.getenv("OPENENV_BASE_URL", "http://127.0.0.1:8000")),
 )
 
 # --- LLM (OpenAI-compatible API) ---
@@ -264,7 +264,12 @@ def main() -> None:
     except ValueError:
         seed = 42
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY or "dummy")
+    # If the platform injected API_BASE_URL, it expects ALL LLM traffic to go there.
+    # Fail fast if API_KEY is missing in that case to avoid silently bypassing the proxy.
+    if os.getenv("API_BASE_URL") and not os.getenv("API_KEY"):
+        raise RuntimeError("API_KEY is required when API_BASE_URL is provided")
+
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     rewards: List[float] = []
     steps_taken = 0

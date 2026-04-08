@@ -7,5 +7,26 @@ description: >
 
 author: adhiawesome
 
+# OpenEnv task manifest for validators.
+# `grader` is an HTTP path on this same server that returns {"score": <0..1>, "reward": <0..1>}.
+tasks:
+  - id: easy
+    difficulty: easy
+    max_steps: 15
+    grader:
+      type: /grade/easy
+
+  - id: medium
+    difficulty: medium
+    max_steps: 15
+    grader:
+      type: /grade/medium
+
+  - id: hard
+    difficulty: hard
+    max_steps: 15
+    grader:
+      type: /grade/hard
+
 # Suggested Space: https://huggingface.co/spaces/adhiawesome/delivery-openenv
 # Docker CMD in Dockerfile uses $PORT (HF sets this automatically).
