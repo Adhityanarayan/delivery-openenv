@@ -1,30 +1,29 @@
 {
-  "description": "Task/grader manifest for validators (>=3 graded tasks; scores must lie strictly between 0 and 1).",
+  "version": "1.0",
   "tasks": [
     {
       "id": "easy",
       "difficulty": "easy",
       "max_steps": 15,
-      "grader": "/grade/easy"
+      "reward_range": [0.01, 0.99],
+      "grader_path": "/grade/easy",
+      "grader": { "type": "http", "method": "GET", "path": "/grade/easy", "endpoint": "/grade/easy" }
     },
     {
       "id": "medium",
       "difficulty": "medium",
       "max_steps": 15,
-      "grader": "/grade/medium"
+      "reward_range": [0.01, 0.99],
+      "grader_path": "/grade/medium",
+      "grader": { "type": "http", "method": "GET", "path": "/grade/medium", "endpoint": "/grade/medium" }
     },
     {
       "id": "hard",
       "difficulty": "hard",
       "max_steps": 15,
-      "grader": "/grade/hard"
-    },
-    {
-      "id": "easy_variant",
-      "difficulty": "easy",
-      "max_steps": 15,
-      "grader": "/grade/easy",
-      "note": "Additional case row so JSON task count > 3 where required."
+      "reward_range": [0.01, 0.99],
+      "grader_path": "/grade/hard",
+      "grader": { "type": "http", "method": "GET", "path": "/grade/hard", "endpoint": "/grade/hard" }
     }
   ]
 }

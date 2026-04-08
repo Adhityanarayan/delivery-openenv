@@ -1,3 +1,10 @@
+# OpenEnv-style manifest + competition task graders.
+spec_version: 1
+type: space
+runtime: fastapi
+app: server.app:app
+port: 7860
+
 name: delivery_optimization
 version: "1.0.0"
 description: >
@@ -7,23 +14,49 @@ description: >
 
 author: adhiawesome
 
-# OpenEnv task manifest for validators.
-# `grader` is the HTTP path (same server) returning {"score": ..., "reward": ...} with 0 < score < 1.
+# Scores must be strictly inside (0, 1) for some validators — see reward_range.
+# `grader` is a dict so parsers can use grader.path / grader.endpoint / grader.type.
 tasks:
   - id: easy
+    name: "Easy — single order"
+    description: "One order, capacity one, small road graph."
     difficulty: easy
     max_steps: 15
-    grader: /grade/easy
+    reward_range: [0.01, 0.99]
+    grader_path: /grade/easy
+    grader_url: /grade/easy
+    grader:
+      type: http
+      path: /grade/easy
+      endpoint: /grade/easy
+      method: GET
 
   - id: medium
+    name: "Medium — four orders"
+    description: "Multiple stops and deadlines; still capacity one."
     difficulty: medium
     max_steps: 15
-    grader: /grade/medium
+    reward_range: [0.01, 0.99]
+    grader_path: /grade/medium
+    grader_url: /grade/medium
+    grader:
+      type: http
+      path: /grade/medium
+      endpoint: /grade/medium
+      method: GET
 
   - id: hard
+    name: "Hard — batching"
+    description: "Six orders with capacity three; batch pickups before drops."
     difficulty: hard
     max_steps: 15
-    grader: /grade/hard
+    reward_range: [0.01, 0.99]
+    grader_path: /grade/hard
+    grader_url: /grade/hard
+    grader:
+      type: http
+      path: /grade/hard
+      endpoint: /grade/hard
+      method: GET
 
 # Suggested Space: https://huggingface.co/spaces/adhiawesome/delivery-openenv
-# Docker CMD in Dockerfile uses $PORT (HF sets this automatically).

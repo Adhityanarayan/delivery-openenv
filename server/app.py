@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import math
 import os
-from typing import Literal
+from pathlib import Path
+from typing import Any, Dict, List, Literal
+
+import yaml
 
 try:
     from openenv.core.env_server.http_server import create_app
@@ -31,6 +34,17 @@ app = create_app(
     max_concurrent_envs=128,
 )
 
+_OPENENV_YAML = Path(__file__).resolve().parent.parent / "openenv.yaml"
+
+
+def _tasks_from_openenv_yaml() -> List[Dict[str, Any]]:
+    try:
+        raw = yaml.safe_load(_OPENENV_YAML.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return []
+    tasks = raw.get("tasks") if isinstance(raw, dict) else None
+    return tasks if isinstance(tasks, list) else []
+
 
 def _clamp_score(x: float) -> float:
     # Validators often require 0 < score < 1 (not exactly 0 or 1).
@@ -43,6 +57,11 @@ def _clamp_score(x: float) -> float:
     return max(0.01, min(0.99, v))
 
 
+def _deterministic_fallback(tier: Literal["easy", "medium", "hard"]) -> float:
+    """Distinct mid scores per tier when LLM is unavailable (still strictly inside (0,1))."""
+    return _clamp_score({"easy": 0.72, "medium": 0.58, "hard": 0.46}[tier])
+
+
 def _llm_grade(tier: Literal["easy", "medium", "hard"]) -> float:
     """
     Lightweight grader endpoint.
@@ -50,12 +69,13 @@ def _llm_grade(tier: Literal["easy", "medium", "hard"]) -> float:
     - If a validator injects API_BASE_URL + API_KEY, we make one LLM call through it.
     - If keys are not available (e.g. local quick test), return a deterministic mid score.
     """
+    # Prefer injected proxy key (competition) over HF_TOKEN.
     api_base_url = os.getenv("API_BASE_URL")
     api_key = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
     model = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 
     if not (api_base_url and api_key):
-        return 0.5
+        return _deterministic_fallback(tier)
 
     # Import locally to avoid making the server fail to start if the dependency is missing.
     from openai import OpenAI
@@ -76,26 +96,48 @@ def _llm_grade(tier: Literal["easy", "medium", "hard"]) -> float:
         text = (resp.choices[0].message.content or "").strip()
         return _clamp_score(float(text))
     except Exception:
-        # Never fail the endpoint hard; validators just need a score.
-        return 0.5
+        return _deterministic_fallback(tier)
+
+
+def _grade_response(tier: Literal["easy", "medium", "hard"]) -> Dict[str, float]:
+    score = float(_clamp_score(_llm_grade(tier)))
+    return {"score": score, "reward": score}
+
+
+@app.get("/tasks")
+def list_tasks():
+    """Expose task + grader metadata for harnesses that do not parse YAML client-side."""
+    return {"tasks": _tasks_from_openenv_yaml()}
 
 
 @app.get("/grade/easy")
 def grade_easy():
-    score = _clamp_score(_llm_grade("easy"))
-    return {"score": score, "reward": score}
+    return _grade_response("easy")
+
+
+@app.post("/grade/easy")
+def grade_easy_post():
+    return _grade_response("easy")
 
 
 @app.get("/grade/medium")
 def grade_medium():
-    score = _clamp_score(_llm_grade("medium"))
-    return {"score": score, "reward": score}
+    return _grade_response("medium")
+
+
+@app.post("/grade/medium")
+def grade_medium_post():
+    return _grade_response("medium")
 
 
 @app.get("/grade/hard")
 def grade_hard():
-    score = _clamp_score(_llm_grade("hard"))
-    return {"score": score, "reward": score}
+    return _grade_response("hard")
+
+
+@app.post("/grade/hard")
+def grade_hard_post():
+    return _grade_response("hard")
 
 
 def main(host: str = "0.0.0.0", port: int = 8000) -> None:

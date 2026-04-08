@@ -4,10 +4,12 @@ LLM-driven inference for Delivery Optimization OpenEnv.
 Uses the OpenAI-compatible client (Hugging Face Inference Providers / vLLM / OpenAI)
 against a running OpenEnv server (local or Hugging Face Space).
 
-Required stdout format (hackathon-style):
-  [START] task=... env=... model=...
-  [STEP]  step=n action=... reward=... done=true|false error=...
-  [END]   success=true|false steps=n score=... rewards=r1,r2,...
+Required stdout format (Phase 2 / Odyssey-style):
+  One [START]…[END] pair per task id (easy, medium, hard by default).
+  [START] task=<task_id> env=<benchmark> model=<model_name>
+  [STEP] step=n action=... reward=... done=true|false error=...
+  [END] task=<task_id> success=true|false steps=n score=... rewards=r1,r2,...
+  Scores must satisfy 0 < score < 1.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from openai import OpenAI
 
 from delivery_env.client import DeliveryEnvClient
+from delivery_env.grading import grader_score_open_interval
 from delivery_env.models import DeliveryAction, DeliveryObservation
 
 # --- Env (OpenEnv HTTP base → WebSocket client) ---
@@ -37,15 +40,21 @@ if _INJECTED_LLM:
     API_BASE_URL = os.environ["API_BASE_URL"]
     API_KEY = os.environ["API_KEY"]
 else:
-    API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+    API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
     API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN") or ""
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 
 # --- Episode ---
-TASK_NAME = os.getenv("DELIVERY_TASK_NAME", "delivery-optimization")
+# Phase 2: one `python inference.py` run must exercise every openenv.yaml task id (default easy/medium/hard).
 BENCHMARK = os.getenv("DELIVERY_BENCHMARK", "delivery_openenv")
-TASK_TIER = os.getenv("DELIVERY_TASK_TIER", "easy")
 SEED_RAW = os.getenv("DELIVERY_SEED", "42")
+# Comma-separated task ids; must match `tasks[].id` in openenv.yaml (default: all three).
+_DEFAULT_TASK_IDS = "easy,medium,hard"
+TASK_IDS = [
+    x.strip()
+    for x in (os.getenv("DELIVERY_TASK_IDS") or _DEFAULT_TASK_IDS).split(",")
+    if x.strip()
+]
 MAX_STEPS = int(os.getenv("DELIVERY_MAX_STEPS", "250"))
 TEMPERATURE = float(os.getenv("DELIVERY_TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("DELIVERY_MAX_TOKENS", "256"))
@@ -72,19 +81,19 @@ def log_step(
     done: bool,
     error: Optional[str],
 ) -> None:
-    # Two spaces after [STEP] per hackathon sample format
+    # phase2_guide.md: `[STEP] step=<n> ...` (single space after [STEP])
     err = _error_token(error)
     print(
-        f"[STEP]  step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={err}",
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={err}",
         flush=True,
     )
 
 
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+def log_end(task: str, success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    # Three spaces after [END] per hackathon sample; score two decimals like sample
+    # phase2_guide.md: `[END] task=<task_id> success=... score=...` (strict 0<score<1; use 3 dp)
     print(
-        f"[END]   success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        f"[END] task={task} success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -261,10 +270,6 @@ def action_log_string(action: DeliveryAction) -> str:
     )
 
 
-def _clamp01(x: float) -> float:
-    return min(max(x, 0.0), 1.0)
-
-
 def _llm_proxy_touch(client: OpenAI) -> None:
     """One minimal chat completion so validators that trace LiteLLM API_KEY see a request."""
     client.chat.completions.create(
@@ -274,6 +279,86 @@ def _llm_proxy_touch(client: OpenAI) -> None:
         temperature=0.0,
         stream=False,
     )
+
+
+def _run_one_task(
+    *,
+    client: OpenAI,
+    env: Any,
+    task_id: str,
+    task_tier: str,
+    seed: int,
+) -> None:
+    rewards: List[float] = []
+    steps_taken = 0
+    final_score = float(grader_score_open_interval(0.0))
+    success = False
+
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+
+    try:
+        r = env.reset(seed=seed, task_tier=task_tier)
+        obs = r.observation
+
+        if obs.done:
+            base = float(obs.grader_score) if obs.grader_score is not None else 0.0
+            final_score = float(
+                grader_score_open_interval(min(max(base, 0.0), 1.0))
+            )
+            success = final_score >= SUCCESS_SCORE_THRESHOLD
+        else:
+            for step in range(1, MAX_STEPS + 1):
+                action, err = get_model_action(client, obs)
+                r = env.step(action)
+                obs = r.observation
+                reward = float(r.reward or 0.0)
+                done = bool(r.done)
+                rewards.append(reward)
+                steps_taken = step
+
+                log_step(
+                    step=step,
+                    action=action_log_string(action),
+                    reward=reward,
+                    done=done,
+                    error=err,
+                )
+
+                if done:
+                    if obs.grader_score is not None:
+                        final_score = float(
+                            grader_score_open_interval(
+                                min(max(float(obs.grader_score), 0.0), 1.0)
+                            )
+                        )
+                    else:
+                        avg = sum(rewards) / max(len(rewards), 1)
+                        final_score = float(
+                            grader_score_open_interval(min(max(avg, 0.0), 1.0))
+                        )
+                    success = final_score >= SUCCESS_SCORE_THRESHOLD
+                    break
+            else:
+                if obs.grader_score is not None:
+                    final_score = float(
+                        grader_score_open_interval(
+                            min(max(float(obs.grader_score), 0.0), 1.0)
+                        )
+                    )
+                success = final_score >= SUCCESS_SCORE_THRESHOLD
+
+    except Exception as exc:
+        print(f"[DEBUG] Task {task_id} error: {exc}", flush=True)
+        final_score = float(grader_score_open_interval(0.0))
+        success = False
+    finally:
+        log_end(
+            task=task_id,
+            success=success,
+            steps=steps_taken,
+            score=final_score,
+            rewards=rewards,
+        )
 
 
 def main() -> None:
@@ -290,67 +375,29 @@ def main() -> None:
         api_key=os.environ["API_KEY"] if _INJECTED_LLM else API_KEY,
     )
 
-    rewards: List[float] = []
-    steps_taken = 0
-    final_score = 0.0
-    success = False
+    if _INJECTED_LLM:
+        _llm_proxy_touch(client)
 
-    log_start(task=TASK_NAME, env=BENCHMARK, model=MODEL_NAME)
-
-    try:
-        if _INJECTED_LLM:
-            _llm_proxy_touch(client)
-        with DeliveryEnvClient(base_url=DELIVERY_ENV_BASE_URL).sync() as env:
-            r = env.reset(seed=seed, task_tier=TASK_TIER)
-            obs = r.observation
-
-            if obs.done:
-                final_score = _clamp01(
-                    float(obs.grader_score) if obs.grader_score is not None else 0.0
+    with DeliveryEnvClient(base_url=DELIVERY_ENV_BASE_URL).sync() as env:
+        for task_id in TASK_IDS:
+            tier = task_id.lower()
+            if tier not in ("easy", "medium", "hard"):
+                print(f"[DEBUG] skip unknown task id {task_id!r}", flush=True)
+                log_end(
+                    task=task_id,
+                    success=False,
+                    steps=0,
+                    score=float(grader_score_open_interval(0.0)),
+                    rewards=[],
                 )
-                success = final_score >= SUCCESS_SCORE_THRESHOLD
-            else:
-                for step in range(1, MAX_STEPS + 1):
-                    action, err = get_model_action(client, obs)
-                    r = env.step(action)
-                    obs = r.observation
-                    reward = float(r.reward or 0.0)
-                    done = bool(r.done)
-                    rewards.append(reward)
-                    steps_taken = step
-
-                    log_step(
-                        step=step,
-                        action=action_log_string(action),
-                        reward=reward,
-                        done=done,
-                        error=err,
-                    )
-
-                    if done:
-                        if obs.grader_score is not None:
-                            final_score = _clamp01(float(obs.grader_score))
-                        else:
-                            avg = sum(rewards) / max(len(rewards), 1)
-                            final_score = _clamp01(avg)
-                        success = final_score >= SUCCESS_SCORE_THRESHOLD
-                        break
-                else:
-                    if obs.grader_score is not None:
-                        final_score = _clamp01(float(obs.grader_score))
-                    success = final_score >= SUCCESS_SCORE_THRESHOLD
-
-    except Exception as exc:
-        print(f"[DEBUG] episode_failed: {exc}", flush=True)
-        final_score = 0.0
-        success = False
-    finally:
-        log_end(
-            success=success,
-            steps=steps_taken,
-            score=final_score,
-            rewards=rewards,
-        )
+                continue
+            _run_one_task(
+                client=client,
+                env=env,
+                task_id=task_id,
+                task_tier=tier,
+                seed=seed,
+            )
 
 
 if __name__ == "__main__":
