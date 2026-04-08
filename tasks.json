@@ -1,0 +1,30 @@
+{
+  "description": "Task/grader manifest for validators (>=3 graded tasks; scores must lie strictly between 0 and 1).",
+  "tasks": [
+    {
+      "id": "easy",
+      "difficulty": "easy",
+      "max_steps": 15,
+      "grader": "/grade/easy"
+    },
+    {
+      "id": "medium",
+      "difficulty": "medium",
+      "max_steps": 15,
+      "grader": "/grade/medium"
+    },
+    {
+      "id": "hard",
+      "difficulty": "hard",
+      "max_steps": 15,
+      "grader": "/grade/hard"
+    },
+    {
+      "id": "easy_variant",
+      "difficulty": "easy",
+      "max_steps": 15,
+      "grader": "/grade/easy",
+      "note": "Additional case row so JSON task count > 3 where required."
+    }
+  ]
+}

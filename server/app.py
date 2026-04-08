@@ -9,6 +9,7 @@ HF Spaces typically set $PORT (often 7860).
 
 from __future__ import annotations
 
+import math
 import os
 from typing import Literal
 
@@ -33,7 +34,13 @@ app = create_app(
 
 def _clamp_score(x: float) -> float:
     # Validators often require 0 < score < 1 (not exactly 0 or 1).
-    return max(0.01, min(0.99, float(x)))
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        v = 0.5
+    if not math.isfinite(v):
+        v = 0.5
+    return max(0.01, min(0.99, v))
 
 
 def _llm_grade(tier: Literal["easy", "medium", "hard"]) -> float:
@@ -67,7 +74,7 @@ def _llm_grade(tier: Literal["easy", "medium", "hard"]) -> float:
             stream=False,
         )
         text = (resp.choices[0].message.content or "").strip()
-        return float(text)
+        return _clamp_score(float(text))
     except Exception:
         # Never fail the endpoint hard; validators just need a score.
         return 0.5

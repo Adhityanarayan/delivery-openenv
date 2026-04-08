@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY delivery_env ./delivery_env
 COPY server ./server
 COPY openenv.yaml ./openenv.yaml
+COPY tasks.json ./tasks.json
 
 EXPOSE 7860
 

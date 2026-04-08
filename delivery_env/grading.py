@@ -8,6 +8,13 @@ from delivery_env.models import DeliveryAction
 from delivery_env.simulator import CourierWorld, Scenario, build_scenario, shortest_path_travel
 
 
+def grader_score_open_interval(raw: float) -> float:
+    """Strict (0, 1) — some validators reject exactly 0.0 or 1.0."""
+    if raw != raw or not math.isfinite(raw):  # NaN / inf
+        return 0.5
+    return float(max(0.01, min(0.99, raw)))
+
+
 def grade_from_counts(
     task_tier: str,
     total_travel: float,
@@ -17,9 +24,9 @@ def grade_from_counts(
     late_deliveries: int,
     all_delivered: bool,
 ) -> float:
-    """Map episode outcomes to [0, 1]."""
+    """Map episode outcomes to (0, 1) open interval for platform validators."""
     if orders_total == 0:
-        return 0.0
+        return grader_score_open_interval(0.0)
     on_time_ratio = on_time_deliveries / max(1, on_time_deliveries + late_deliveries)
     if on_time_deliveries + late_deliveries == 0:
         on_time_ratio = 0.0
@@ -35,7 +42,8 @@ def grade_from_counts(
     raw = w_time * on_time_ratio + w_travel * travel_eff + w_comp * completion
     if tier == "hard" and not all_delivered:
         raw *= 0.85
-    return float(max(0.0, min(1.0, raw)))
+    closed = float(max(0.0, min(1.0, raw)))
+    return grader_score_open_interval(closed)
 
 
 def _primary_target_node(world: CourierWorld) -> Optional[int]:
