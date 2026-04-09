@@ -18,6 +18,7 @@ import json
 import os
 import re
 import textwrap
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
@@ -59,6 +60,10 @@ MAX_STEPS = int(os.getenv("DELIVERY_MAX_STEPS", "250"))
 TEMPERATURE = float(os.getenv("DELIVERY_TEMPERATURE", "0.2"))
 MAX_TOKENS = int(os.getenv("DELIVERY_MAX_TOKENS", "256"))
 SUCCESS_SCORE_THRESHOLD = float(os.getenv("DELIVERY_SUCCESS_THRESHOLD", "0.5"))
+
+# Safety limits so validators (often ~300s) don't time out.
+HTTP_TIMEOUT_S = float(os.getenv("DELIVERY_HTTP_TIMEOUT_S", "15"))
+TASK_TIME_BUDGET_S = float(os.getenv("DELIVERY_TASK_TIME_BUDGET_S", "80"))
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -145,6 +150,67 @@ SYSTEM_PROMPT = textwrap.dedent(
     otherwise move toward serving the next order. Respect deadlines.
     """
 ).strip()
+
+def _http_base(url: str) -> str:
+    return url.rstrip("/")
+
+
+def _post_json(url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    # requests is a dependency of openenv-core; import lazily.
+    import requests
+
+    r = requests.post(url, json=payload, timeout=HTTP_TIMEOUT_S)
+    r.raise_for_status()
+    data = r.json()
+    return data if isinstance(data, dict) else {}
+
+
+def _reset_http(base_url: str, *, seed: int, task_tier: str) -> Dict[str, Any]:
+    return _post_json(
+        f"{_http_base(base_url)}/reset",
+        {"seed": seed, "task_tier": task_tier},
+    )
+
+
+def _step_http(base_url: str, action: DeliveryAction) -> Dict[str, Any]:
+    return _post_json(
+        f"{_http_base(base_url)}/step",
+        {
+            "action": {
+                "opcode": action.opcode,
+                "edge_index": action.edge_index,
+                "order_index": action.order_index,
+            }
+        },
+    )
+
+
+def _obs_from_payload(payload: Dict[str, Any], *, fallback_tier: str) -> DeliveryObservation:
+    obs_data = payload.get("observation", {}) if isinstance(payload, dict) else {}
+    # Note: Observation schema is stable; default defensively.
+    return DeliveryObservation(
+        done=bool(payload.get("done", False)),
+        reward=payload.get("reward"),
+        task_tier=str(obs_data.get("task_tier", fallback_tier)),
+        courier_node=int(obs_data.get("courier_node", 0)),
+        current_time_minutes=float(obs_data.get("current_time_minutes", 0.0)),
+        capacity=int(obs_data.get("capacity", 1)),
+        load_count=int(obs_data.get("load_count", 0)),
+        graph_num_nodes=int(obs_data.get("graph_num_nodes", 1)),
+        neighbor_nodes=list(obs_data.get("neighbor_nodes", [])),
+        travel_minutes=[float(x) for x in (obs_data.get("travel_minutes", []) or [])],
+        order_pickup_node=list(obs_data.get("order_pickup_node", [])),
+        order_drop_node=list(obs_data.get("order_drop_node", [])),
+        order_ready_time=[float(x) for x in (obs_data.get("order_ready_time", []) or [])],
+        order_deadline=[float(x) for x in (obs_data.get("order_deadline", []) or [])],
+        order_picked=list(obs_data.get("order_picked", [])),
+        order_delivered=list(obs_data.get("order_delivered", [])),
+        legal_edge_mask=list(obs_data.get("legal_edge_mask", [])),
+        legal_pickup_mask=list(obs_data.get("legal_pickup_mask", [])),
+        legal_deliver_mask=list(obs_data.get("legal_deliver_mask", [])),
+        info_message=str(obs_data.get("info_message", "")),
+        grader_score=obs_data.get("grader_score"),
+    )
 
 
 def build_user_prompt(obs: DeliveryObservation) -> str:
@@ -297,8 +363,69 @@ def _run_one_task(
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
 
     try:
-        r = env.reset(seed=seed, task_tier=task_tier)
-        obs = r.observation
+        t0 = time.time()
+        # Preferred: persistent WebSocket session (OpenEnv canonical for multi-step episodes).
+        # HF Space returned 500s on POST /step in some deployments; WS avoids that.
+        try:
+            with DeliveryEnvClient(base_url=DELIVERY_ENV_BASE_URL).sync() as ws_env:
+                r = ws_env.reset(seed=seed, task_tier=task_tier)
+                obs = r.observation
+
+                if obs.done:
+                    base = float(obs.grader_score) if obs.grader_score is not None else 0.0
+                    final_score = float(
+                        grader_score_open_interval(min(max(base, 0.0), 1.0))
+                    )
+                    success = final_score >= SUCCESS_SCORE_THRESHOLD
+                    return
+
+                for step in range(1, MAX_STEPS + 1):
+                    if time.time() - t0 > TASK_TIME_BUDGET_S:
+                        raise TimeoutError("task_time_budget_exceeded")
+                    action, err = get_model_action(client, obs)
+                    r = ws_env.step(action)
+                    obs = r.observation
+                    reward = float(r.reward or 0.0)
+                    done = bool(r.done)
+                    rewards.append(reward)
+                    steps_taken = step
+
+                    log_step(
+                        step=step,
+                        action=action_log_string(action),
+                        reward=reward,
+                        done=done,
+                        error=err,
+                    )
+
+                    if done:
+                        if obs.grader_score is not None:
+                            final_score = float(
+                                grader_score_open_interval(
+                                    min(max(float(obs.grader_score), 0.0), 1.0)
+                                )
+                            )
+                        else:
+                            avg = sum(rewards) / max(len(rewards), 1)
+                            final_score = float(
+                                grader_score_open_interval(min(max(avg, 0.0), 1.0))
+                            )
+                        success = final_score >= SUCCESS_SCORE_THRESHOLD
+                        return
+
+                # Max steps reached without done
+                if obs.grader_score is not None:
+                    final_score = float(
+                        grader_score_open_interval(min(max(float(obs.grader_score), 0.0), 1.0))
+                    )
+                success = final_score >= SUCCESS_SCORE_THRESHOLD
+                return
+        except Exception as ws_exc:
+            print(f"[DEBUG] ws_failed task={task_id} err={ws_exc}", flush=True)
+
+        # Fallback: HTTP (best-effort). Keep strict timeouts.
+        reset_payload = _reset_http(DELIVERY_ENV_BASE_URL, seed=seed, task_tier=task_tier)
+        obs = _obs_from_payload(reset_payload, fallback_tier=task_tier)
 
         if obs.done:
             base = float(obs.grader_score) if obs.grader_score is not None else 0.0
@@ -308,11 +435,13 @@ def _run_one_task(
             success = final_score >= SUCCESS_SCORE_THRESHOLD
         else:
             for step in range(1, MAX_STEPS + 1):
+                if time.time() - t0 > TASK_TIME_BUDGET_S:
+                    raise TimeoutError("task_time_budget_exceeded")
                 action, err = get_model_action(client, obs)
-                r = env.step(action)
-                obs = r.observation
-                reward = float(r.reward or 0.0)
-                done = bool(r.done)
+                step_payload = _step_http(DELIVERY_ENV_BASE_URL, action)
+                reward = float(step_payload.get("reward") or 0.0)
+                done = bool(step_payload.get("done", False))
+                obs = _obs_from_payload(step_payload, fallback_tier=task_tier)
                 rewards.append(reward)
                 steps_taken = step
 
@@ -367,37 +496,42 @@ def main() -> None:
     except ValueError:
         seed = 42
 
-    if "API_BASE_URL" in os.environ and "API_KEY" not in os.environ:
-        raise RuntimeError("API_KEY is required when API_BASE_URL is provided")
+    # Never raise at top-level; always emit END lines.
+    try:
+        if "API_BASE_URL" in os.environ and "API_KEY" not in os.environ:
+            raise RuntimeError("API_KEY is required when API_BASE_URL is provided")
 
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"] if _INJECTED_LLM else API_BASE_URL,
-        api_key=os.environ["API_KEY"] if _INJECTED_LLM else API_KEY,
-    )
+        client = OpenAI(
+            base_url=os.environ["API_BASE_URL"] if _INJECTED_LLM else API_BASE_URL,
+            api_key=os.environ["API_KEY"] if _INJECTED_LLM else API_KEY,
+        )
 
-    if _INJECTED_LLM:
-        _llm_proxy_touch(client)
+        if _INJECTED_LLM:
+            _llm_proxy_touch(client)
+    except Exception as exc:
+        print(f"[DEBUG] llm_init_failed: {exc}", flush=True)
+        client = OpenAI(base_url="http://127.0.0.1:1", api_key="dummy")
 
-    with DeliveryEnvClient(base_url=DELIVERY_ENV_BASE_URL).sync() as env:
-        for task_id in TASK_IDS:
-            tier = task_id.lower()
-            if tier not in ("easy", "medium", "hard"):
-                print(f"[DEBUG] skip unknown task id {task_id!r}", flush=True)
-                log_end(
-                    task=task_id,
-                    success=False,
-                    steps=0,
-                    score=float(grader_score_open_interval(0.0)),
-                    rewards=[],
-                )
-                continue
-            _run_one_task(
-                client=client,
-                env=env,
-                task_id=task_id,
-                task_tier=tier,
-                seed=seed,
+    for task_id in TASK_IDS:
+        tier = task_id.lower()
+        if tier not in ("easy", "medium", "hard"):
+            print(f"[DEBUG] skip unknown task id {task_id!r}", flush=True)
+            log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+            log_end(
+                task=task_id,
+                success=False,
+                steps=0,
+                score=float(grader_score_open_interval(0.0)),
+                rewards=[],
             )
+            continue
+        _run_one_task(
+            client=client,
+            env=None,
+            task_id=task_id,
+            task_tier=tier,
+            seed=seed,
+        )
 
 
 if __name__ == "__main__":
